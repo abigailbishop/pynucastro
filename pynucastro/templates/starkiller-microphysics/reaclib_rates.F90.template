@@ -1,5 +1,7 @@
 module reaclib_rates
-  use screening_module, only: screen5, add_screening_factor, screening_init, plasma_state, fill_plasma_state
+  use screening_module, only: screen5, add_screening_factor, &
+                              screening_init, screening_finalize, &
+                              plasma_state, fill_plasma_state
   use network
 
   implicit none
