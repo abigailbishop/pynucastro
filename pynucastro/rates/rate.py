@@ -9,7 +9,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import collections
 
-from pynucastro.nucdata import Element, UnidentifiedElement, PeriodicTable
+from pynucastro.nucdata import UnidentifiedElement, PeriodicTable
+
 
 def list_known_rates():
     """ list the rates found in the library """
@@ -18,15 +19,30 @@ def list_known_rates():
 
     for _, _, filenames in os.walk(lib_path):
         for f in filenames:
+            # skip over files that are not rate files
+            if f.endswith(".md") or f.endswith(".dat"):
+                continue
             try:
                 lib = Library(f)
             except:
                 continue
             else:
-                print("{:32} : ")
+                print("{:32} : ".format(f))
                 for r in lib.get_rates():
                     print("                                 : {}".format(r))
 
+import numba
+
+Tfactor_spec = [
+('T9', numba.float64),
+('T9i', numba.float64),
+('T913', numba.float64),
+('T913i', numba.float64),
+('T953', numba.float64),
+('lnT9', numba.float64)
+]
+
+@numba.jitclass(Tfactor_spec)
 class Tfactors(object):
     """ precompute temperature factors for speed """
 
@@ -38,6 +54,7 @@ class Tfactors(object):
         self.T913 = self.T9**(1./3.)
         self.T953 = self.T9**(5./3.)
         self.lnT9 = np.log(self.T9)
+
 
 class SingleSet(object):
     """ a set in Reaclib is one piece of a rate, in the form
@@ -57,11 +74,11 @@ class SingleSet(object):
         self._update_label_properties()
 
     def _update_label_properties(self):
-        """ Set label and flags indicating Set is resonant, 
+        """ Set label and flags indicating Set is resonant,
             weak, or reverse. """
-        assert(type(self.labelprops)==str)
+        assert(type(self.labelprops) == str)
         try:
-            assert(len(self.labelprops)==6)
+            assert(len(self.labelprops) == 6)
         except:
             raise
         else:
@@ -96,7 +113,6 @@ class SingleSet(object):
                                  self.a[5]*tf.T953 +
                                  self.a[6]*tf.lnT9)
 
-
     def set_string(self, prefix="set", plus_equal=False):
         """
         return a string containing the python code for this set
@@ -123,9 +139,11 @@ class SingleSet(object):
         string += ")"
         return string
 
+
 class UnsupportedNucleus(BaseException):
     def __init__(self):
         return
+
 
 class Nucleus(object):
     """
@@ -151,6 +169,13 @@ class Nucleus(object):
             self.el = "h"
             self.A = 3
             self.short_spec_name = "h3"
+        elif name == "a":
+            #this is a convenience, enabling the use of a commonly-used alias:
+            #    He4 --> \alpha --> "a" , e.g. c12(a,g)o16
+            self.el ="he"
+            self.A = 4
+            self.short_spec_name = "he4"
+            self.raw = "he4"
         elif name == "n":
             self.el = "n"
             self.A = 1
@@ -158,7 +183,7 @@ class Nucleus(object):
             self.N = 1
             self.short_spec_name = "n"
             self.spec_name = "neutron"
-            self.pretty = r"\mathrm{{{}}}".format(self.el)            
+            self.pretty = r"\mathrm{{{}}}".format(self.el)
         else:
             e = re.match(r"([a-zA-Z]*)(\d*)", name)
             self.el = e.group(1).title()  # chemical symbol
@@ -188,17 +213,17 @@ class Nucleus(object):
                 raise
             else:
                 self.Z = i.Z
-                assert(type(self.Z)==int)
+                assert(type(self.Z) == int)
                 assert(self.Z >= 0)
                 self.N = self.A - self.Z
-                assert(type(self.N)==int)
+                assert(type(self.N) == int)
                 assert(self.N >= 0)
 
                 # long name
                 self.spec_name = '{}-{}'.format(i.name, self.A)
 
                 # latex formatted style
-                self.pretty = r"{{}}^{{{}}}\mathrm{{{}}}".format(self.A, self.el)
+                self.pretty = r"{{}}^{{{}}}\mathrm{{{}}}".format(self.A, self.el.capitalize())
 
     def __repr__(self):
         return self.raw
@@ -215,6 +240,7 @@ class Nucleus(object):
             return self.Z < other.Z
         else:
             return self.A < other.A
+
 
 class Library(object):
     """
@@ -238,7 +264,7 @@ class Library(object):
             self._rates = None
             if isinstance(rates, Rate):
                 rates = [rates]
-            assert (isinstance(rates, dict) or isinstance(rates, list)), "ERROR: rates in Library constructor must be a Rate object, list of Rate objects, or dictionary of Rate objects keyed by Rate.get_rate_id()"                
+            assert (isinstance(rates, dict) or isinstance(rates, list)), "ERROR: rates in Library constructor must be a Rate object, list of Rate objects, or dictionary of Rate objects keyed by Rate.get_rate_id()"
             if isinstance(rates, dict):
                 self._rates = rates
             elif isinstance(rates, list):
@@ -385,7 +411,7 @@ class Library(object):
         new_rates = self._rates
         for id, r in other._rates.items():
             try:
-                assert not id in new_rates
+                assert id not in new_rates
             except:
                 if r != new_rates[id]:
                     print('ERROR: rate {} defined differently in libraries {} and {}\n'.format(r, self._library_file, other._library_file))
@@ -412,7 +438,7 @@ class Library(object):
 
     def linking_nuclei(self, nuclist, with_reverse=True):
         """
-        Return a Library object containing the rates linking the 
+        Return a Library object containing the rates linking the
         nuclei provided in the list of Nucleus objects or nucleus abbreviations 'nuclist'.
 
         If with_reverse is True, then include reverse rates. Otherwise
@@ -453,11 +479,11 @@ class Library(object):
         for r in triage_library.get_rates():
             include = True
             for nuc in r.reactants:
-                if not nuc in nucleus_list:
+                if nuc not in nucleus_list:
                     include = False
                     break
             for nuc in r.products:
-                if not nuc in nucleus_list:
+                if nuc not in nucleus_list:
                     include = False
                     break
             if not with_reverse and r.reverse:
@@ -498,19 +524,65 @@ class Library(object):
         else:
             return None
 
+
 class RateFilter(object):
-    """RateFilter stores selection rules specifying a rate or group of
-    rates to assist searching for rates stored in a Library."""
+    """RateFilter filters out a specified rate or set of rates
+    
+    A RateFilter stores selection rules specifying a rate or group of
+    rates to assist in searching for rates stored in a Library.
+    """
 
     def __init__(self, reactants=None, products=None, exact=True,
                  reverse=None, min_reactants=None, max_reactants=None,
                  min_products=None, max_products=None):
+        """Create a new RateFilter with the given selection rules
+
+        Keyword Arguments:
+            reactants -- Description of the reactants as one of:
+                1. a list of Nucleus objects
+                2. a list of string descriptions of reactant nuclides
+                   these strings must be parsable by Nucleus
+                3. a single reactant Nucleus
+                4. a single string description of the reactant nuclide
+            products  -- Description of the products in same form as above
+            exact     -- boolean, 
+                         if True, products or reactants must match exactly [default]
+                         if False, then all products or reactants must be found
+                         in a comparison rate, but the comparison may contain
+                         additional products or reactants
+            reverse   -- boolean,
+                         if True, only match reverse-derived rates
+                         if False, only match directly-derived rates
+                         if None, you don't care, match both [default]
+            min_reactants -- int, match Rates that have at least this many reactants
+            min_products  -- int, match Rates that have at least this many products
+            max_reactants -- int, match Rates that have no more than this many reactants
+            max_products  -- int, match Rates that have no more than this many products
+        
+        Examples:
+            Create a filter that finds all proton capture and proton-burning reactions
+            in a Library instance my_library::
+                >>> pcap_filter = RateFilter(reactants='p', exact=False)
+                >>> pcap_library = my_library.filter(pcap_filter)
+            or you can use Nucleus::
+                >>> pcap_filter = RateFilter(reactants=Nucleus('p'), exact=False)
+                >>> pcap_library = my_library.filter(pcap_filter)
+
+            Create a filter that finds C12 (a,g) O16 
+            Notes:
+                + photons/gammas are not treated as nuclides, so they cannot be
+                a reactant or product
+                + this rate is in the ReacLib library used here as 
+                O16 --> He4 C12 -- you need to know how your library treats rates::
+                    >>> cago_filter = RateFilter(reactants='o16', products=['c12', 'a'])
+                    >>> cago_library = my_library.filter(cago_filter)
+        """
         self.reactants = []
         self.products = []
         self.exact = exact
         self.reverse = reverse
         self.min_reactants = min_reactants
-        self.min_products = min_products        
+        self.min_products = min_products
         self.max_reactants = max_reactants
         self.max_products = max_products
 
@@ -519,14 +591,14 @@ class RateFilter(object):
                 reactants = [reactants]
             self.reactants = [self._cast_nucleus(r) for r in reactants]
         if products:
-            if type(products) == Nucleus or type(reactants) == str:
+            if type(products) == Nucleus or type(products) == str:
                 products = [products]
             self.products = [self._cast_nucleus(r) for r in products]
 
     @staticmethod
     def _cast_nucleus(r):
         """ Make sure r is of type Nucleus. """
-        if not type(r)==Nucleus:
+        if not type(r) == Nucleus:
             try:
                 rnuc = Nucleus(r)
             except:
@@ -570,23 +642,23 @@ class RateFilter(object):
         matches_products = True
         matches_reverse = True
         matches_min_reactants = True
-        matches_min_products = True        
+        matches_min_products = True
         matches_max_reactants = True
         matches_max_products = True
         if self.reactants:
             matches_reactants = self._compare_nuclides(self.reactants, r.reactants, self.exact)
         if self.products:
             matches_products = self._compare_nuclides(self.products, r.products, self.exact)
-        if type(self.reverse)==type(True):
+        if type(self.reverse) == type(True):
             matches_reverse = self.reverse == r.reverse
-        if type(self.min_reactants)==int:
+        if type(self.min_reactants) == int:
             matches_min_reactants = len(r.reactants) >= self.min_reactants
-        if type(self.min_products)==int:
+        if type(self.min_products) == int:
             matches_min_products = len(r.products) >= self.min_products
-        if type(self.max_reactants)==int:
+        if type(self.max_reactants) == int:
             matches_max_reactants = len(r.reactants) <= self.max_reactants
-        if type(self.max_products)==int:
-            matches_max_products = len(r.products) <= self.max_products            
+        if type(self.max_products) == int:
+            matches_max_products = len(r.products) <= self.max_products
         return (matches_reactants and matches_products and matches_reverse and
                 matches_min_reactants and matches_max_reactants and
                 matches_min_products and matches_max_products)
@@ -602,6 +674,7 @@ class RateFilter(object):
                                min_products=self.min_reactants,
                                max_products=self.max_reactants)
         return newfilter
+
 
 class Rate(object):
     """ a single Reaclib rate, which can be composed of multiple sets """
@@ -696,9 +769,10 @@ class Rate(object):
         assert(type(self.chapter) == int)
         assert(self.label == other.label)
         assert(self.weak == other.weak)
+        assert(self.weak_type == other.weak_type)
         assert(self.tabular == other.tabular)
         assert(self.reverse == other.reverse)
-        labelprops = self.labelprops[:]
+
         if self.resonant != other.resonant:
             self._labelprops_combine_resonance()
         new_rate = Rate(chapter=self.chapter,
@@ -723,8 +797,8 @@ class Rate(object):
         self._update_label_properties()
 
     def _update_resonance_combined(self):
-        """ Checks the Sets in this Rate and updates the 
-            resonance_combined flag as well as 
+        """ Checks the Sets in this Rate and updates the
+            resonance_combined flag as well as
             self.labelprops[4] """
         sres = [s.resonant for s in self.sets]
         if True in sres and False in sres:
@@ -733,7 +807,7 @@ class Rate(object):
             self.resonance_combined = False
 
     def _labelprops_combine_resonance(self):
-        """ Update self.labelprops[4] = 'c'. 
+        """ Update self.labelprops[4] = 'c'.
             Also set the resonance_combined flag. """
         llp = list(self.labelprops)
         llp[4] = 'c'
@@ -741,23 +815,31 @@ class Rate(object):
         self.resonance_combined = True
 
     def _update_label_properties(self):
-        """ Set label and flags indicating Rate is resonant, 
+        """ Set label and flags indicating Rate is resonant,
             weak, or reverse. """
-        assert(type(self.labelprops)==str)
+        assert(type(self.labelprops) == str)
         try:
-            assert(len(self.labelprops)==6)
+            assert(len(self.labelprops) == 6)
         except:
-            assert(self.labelprops=='tabular')
+            assert(self.labelprops == 'tabular')
             self.label = 'tabular'
             self.resonant = False
             self.resonance_combined = False
             self.weak = False # The tabular rate might or might not be weak
+            self.weak_type = None
             self.reverse = False
             self.tabular = True
         else:
             self.label = self.labelprops[0:4]
             self.resonant = self.labelprops[4] == 'r'
             self.weak = self.labelprops[4] == 'w'
+            if self.weak:
+                if self.label.strip() == 'ec' or self.label.strip() == 'bec':
+                    self.weak_type = 'electron_capture'
+                else:
+                    self.weak_type = self.label.strip().replace('+','_pos_').replace('-','_neg_')
+            else:
+                self.weak_type = None
             self.reverse = self.labelprops[5] == 'v'
             self.tabular = False
 
@@ -950,6 +1032,8 @@ class Rate(object):
             self.inv_prefactor = self.inv_prefactor * np.math.factorial(self.reactants.count(r))
         self.prefactor = self.prefactor/float(self.inv_prefactor)
         self.dens_exp = len(self.reactants)-1
+        if (self.weak_type == 'electron_capture' and not self.tabular):
+            self.dens_exp = self.dens_exp + 1
 
     def _set_screening(self):
         """ determine if this rate is eligible for screening and the nuclei to use. """
@@ -1002,25 +1086,34 @@ class Rate(object):
         self.pretty_string += r"$"
 
         if not self.fname:
+            # This is used to determine which rates to detect as the same reaction
+            # from multiple sources in a Library file, so it should not be unique
+            # to a given source, e.g. wc12, but only unique to the reaction.
             reactants_str = '_'.join([repr(nuc) for nuc in self.reactants])
             products_str = '_'.join([repr(nuc) for nuc in self.products])
             self.fname = '{}__{}'.format(reactants_str, products_str)
+            if self.weak:
+                self.fname = self.fname + '__weak__{}'.format(self.weak_type)
 
     def get_rate_id(self):
         """ Get an identifying string for this rate.
         Don't include resonance state since we combine resonant and
         non-resonant versions of reactions. """
-        sweak = ''
-        if self.weak:
-            sweak = '_weak'
+
         srev = ''
         if self.reverse:
-            srev = '_reverse'
+            srev = 'reverse'
+
+        sweak = ''
+        if self.weak:
+            sweak = 'weak'
+
         ssrc = 'reaclib'
         if self.tabular:
             ssrc = 'tabular'
-        return '{}_{}_{}{}{}'.format(self.__repr__(), self.label.strip(),
-                                    ssrc, sweak, srev)
+
+        return '{} <{}_{}_{}_{}>'.format(self.__repr__(), self.label.strip(),
+                                         ssrc, sweak, srev)
 
     def heaviest(self):
         """
@@ -1037,7 +1130,7 @@ class Rate(object):
 
     def lightest(self):
         """
-        Return the lightest nuclide in this Rate. 
+        Return the lightest nuclide in this Rate.
 
         If two nuclei are tied in mass number, return the one with the
         highest atomic number.
