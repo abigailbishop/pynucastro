@@ -19,16 +19,30 @@ def list_known_rates():
 
     for _, _, filenames in os.walk(lib_path):
         for f in filenames:
+            # skip over files that are not rate files
+            if f.endswith(".md") or f.endswith(".dat"):
+                continue
             try:
                 lib = Library(f)
             except:
                 continue
             else:
-                print("{:32} : ")
+                print("{:32} : ".format(f))
                 for r in lib.get_rates():
                     print("                                 : {}".format(r))
 
+import numba
 
+Tfactor_spec = [
+('T9', numba.float64),
+('T9i', numba.float64),
+('T913', numba.float64),
+('T913i', numba.float64),
+('T953', numba.float64),
+('lnT9', numba.float64)
+]
+
+@numba.jitclass(Tfactor_spec)
 class Tfactors(object):
     """ precompute temperature factors for speed """
 
@@ -155,6 +169,13 @@ class Nucleus(object):
             self.el = "h"
             self.A = 3
             self.short_spec_name = "h3"
+        elif name == "a":
+            #this is a convenience, enabling the use of a commonly-used alias:
+            #    He4 --> \alpha --> "a" , e.g. c12(a,g)o16
+            self.el ="he"
+            self.A = 4
+            self.short_spec_name = "he4"
+            self.raw = "he4"
         elif name == "n":
             self.el = "n"
             self.A = 1
@@ -505,12 +526,57 @@ class Library(object):
 
 
 class RateFilter(object):
-    """RateFilter stores selection rules specifying a rate or group of
-    rates to assist searching for rates stored in a Library."""
+    """RateFilter filters out a specified rate or set of rates
+    
+    A RateFilter stores selection rules specifying a rate or group of
+    rates to assist in searching for rates stored in a Library.
+    """
 
     def __init__(self, reactants=None, products=None, exact=True,
                  reverse=None, min_reactants=None, max_reactants=None,
                  min_products=None, max_products=None):
+        """Create a new RateFilter with the given selection rules
+
+        Keyword Arguments:
+            reactants -- Description of the reactants as one of:
+                1. a list of Nucleus objects
+                2. a list of string descriptions of reactant nuclides
+                   these strings must be parsable by Nucleus
+                3. a single reactant Nucleus
+                4. a single string description of the reactant nuclide
+            products  -- Description of the products in same form as above
+            exact     -- boolean, 
+                         if True, products or reactants must match exactly [default]
+                         if False, then all products or reactants must be found
+                         in a comparison rate, but the comparison may contain
+                         additional products or reactants
+            reverse   -- boolean,
+                         if True, only match reverse-derived rates
+                         if False, only match directly-derived rates
+                         if None, you don't care, match both [default]
+            min_reactants -- int, match Rates that have at least this many reactants
+            min_products  -- int, match Rates that have at least this many products
+            max_reactants -- int, match Rates that have no more than this many reactants
+            max_products  -- int, match Rates that have no more than this many products
+        
+        Examples:
+            Create a filter that finds all proton capture and proton-burning reactions
+            in a Library instance my_library::
+                >>> pcap_filter = RateFilter(reactants='p', exact=False)
+                >>> pcap_library = my_library.filter(pcap_filter)
+            or you can use Nucleus::
+                >>> pcap_filter = RateFilter(reactants=Nucleus('p'), exact=False)
+                >>> pcap_library = my_library.filter(pcap_filter)
+
+            Create a filter that finds C12 (a,g) O16 
+            Notes:
+                + photons/gammas are not treated as nuclides, so they cannot be
+                a reactant or product
+                + this rate is in the ReacLib library used here as 
+                O16 --> He4 C12 -- you need to know how your library treats rates::
+                    >>> cago_filter = RateFilter(reactants='o16', products=['c12', 'a'])
+                    >>> cago_library = my_library.filter(cago_filter)
+        """
         self.reactants = []
         self.products = []
         self.exact = exact
@@ -525,7 +591,7 @@ class RateFilter(object):
                 reactants = [reactants]
             self.reactants = [self._cast_nucleus(r) for r in reactants]
         if products:
-            if type(products) == Nucleus or type(reactants) == str:
+            if type(products) == Nucleus or type(products) == str:
                 products = [products]
             self.products = [self._cast_nucleus(r) for r in products]
 
@@ -703,6 +769,7 @@ class Rate(object):
         assert(type(self.chapter) == int)
         assert(self.label == other.label)
         assert(self.weak == other.weak)
+        assert(self.weak_type == other.weak_type)
         assert(self.tabular == other.tabular)
         assert(self.reverse == other.reverse)
 
@@ -759,12 +826,20 @@ class Rate(object):
             self.resonant = False
             self.resonance_combined = False
             self.weak = False # The tabular rate might or might not be weak
+            self.weak_type = None
             self.reverse = False
             self.tabular = True
         else:
             self.label = self.labelprops[0:4]
             self.resonant = self.labelprops[4] == 'r'
             self.weak = self.labelprops[4] == 'w'
+            if self.weak:
+                if self.label.strip() == 'ec' or self.label.strip() == 'bec':
+                    self.weak_type = 'electron_capture'
+                else:
+                    self.weak_type = self.label.strip().replace('+','_pos_').replace('-','_neg_')
+            else:
+                self.weak_type = None
             self.reverse = self.labelprops[5] == 'v'
             self.tabular = False
 
@@ -957,6 +1032,8 @@ class Rate(object):
             self.inv_prefactor = self.inv_prefactor * np.math.factorial(self.reactants.count(r))
         self.prefactor = self.prefactor/float(self.inv_prefactor)
         self.dens_exp = len(self.reactants)-1
+        if (self.weak_type == 'electron_capture' and not self.tabular):
+            self.dens_exp = self.dens_exp + 1
 
     def _set_screening(self):
         """ determine if this rate is eligible for screening and the nuclei to use. """
@@ -1009,25 +1086,34 @@ class Rate(object):
         self.pretty_string += r"$"
 
         if not self.fname:
+            # This is used to determine which rates to detect as the same reaction
+            # from multiple sources in a Library file, so it should not be unique
+            # to a given source, e.g. wc12, but only unique to the reaction.
             reactants_str = '_'.join([repr(nuc) for nuc in self.reactants])
             products_str = '_'.join([repr(nuc) for nuc in self.products])
             self.fname = '{}__{}'.format(reactants_str, products_str)
+            if self.weak:
+                self.fname = self.fname + '__weak__{}'.format(self.weak_type)
 
     def get_rate_id(self):
         """ Get an identifying string for this rate.
         Don't include resonance state since we combine resonant and
         non-resonant versions of reactions. """
-        sweak = ''
-        if self.weak:
-            sweak = '_weak'
+
         srev = ''
         if self.reverse:
-            srev = '_reverse'
+            srev = 'reverse'
+
+        sweak = ''
+        if self.weak:
+            sweak = 'weak'
+
         ssrc = 'reaclib'
         if self.tabular:
             ssrc = 'tabular'
-        return '{} <{}_{}{}{}>'.format(self.__repr__(), self.label.strip(),
-                                    ssrc, sweak, srev)
+
+        return '{} <{}_{}_{}_{}>'.format(self.__repr__(), self.label.strip(),
+                                         ssrc, sweak, srev)
 
     def heaviest(self):
         """
